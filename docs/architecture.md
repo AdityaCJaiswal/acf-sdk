@@ -15,65 +15,13 @@ All policy evaluation happens in the sidecar. The agent cannot reach inside it.
 
 ## System diagram
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│  Agent runtime  (Untrusted · LangGraph / LangChain / custom loop)   │
-│                                                                     │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌──────────┐  │
-│  │ User prompt │  │ RAG context │  │ Tool output │  │  Memory  │  │
-│  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘  └────┬─────┘  │
-│         └────────────────┴────────────────┴───────────────┘        │
-│                                    │                                │
-│  ┌─────────────────────────────────▼───────────────────────────┐   │
-│  │        SDK — Hook registry (PEP)                            │   │
-│  │  v1: on_prompt · on_context · on_tool_call · on_memory      │   │
-│  └─────────────────────────────────────────────────────────────┘   │
-└──────────────────────────────┬──────────────────────────────────────┘
-                               │
-            ── trust boundary (isolated process) ──
-                               │
-                    IPC (UDS / named pipe)
-                               │
-┌──────────────────────────────▼──────────────────────────────────────┐
-│  Sidecar kernel — PDP (Policy Decision Point)                       │
-│  Isolated process · all policy evaluation happens here              │
-│                                                                     │
-│  ┌──────────────────────────────────────────────────────────────┐  │
-│  │  Risk context object                                         │  │
-│  │  score · signals[] · provenance · session_id                 │  │
-│  │  state: null in v1, populated in v2                          │  │
-│  └──────────────────────────────────────────────────────────────┘  │
-│                                                                     │
-│  ┌──────────┐   ┌────────────┐   ┌────────┐   ┌─────────────┐     │
-│  │Validate  │──▶│ Normalise  │──▶│  Scan  │──▶│  Aggregate  │     │
-│  │HMAC·nonce│   │decode·NFKC │   │lexical │   │score·weight │     │
-│  └──────────┘   └────────────┘   └────────┘   └──────┬──────┘     │
-│                                       ↩ short-circuit on hard block │
-│                                                       │             │
-│  ┌────────────────────────────────────────────────────▼──────────┐ │
-│  │  Policy engine (PDP core)                                     │ │
-│  │  Evaluates Rego / YAML rules · layered by hook type           │ │
-│  └───────────────────┬──────────────────┬────────────────────────┘ │
-│                      │                  │                           │
-│            ┌─────────▼───┐   ┌──────────▼──┐   ┌──────────────┐  │
-│            │    ALLOW    │   │   SANITISE  │   │    BLOCK     │  │
-│            └─────────────┘   └─────────────┘   └──────────────┘  │
-└─────────────────────────────────────────────────────────────────────┘
-
-  ┌───────────────────────────┐         ┌────────────────────────────┐
-  │  Policy store — PMP       │         │  Observability             │
-  │  Versioned YAML/Rego files│         │  OTel spans · audit trail  │
-  │  per-hook policy templates│         │  per-decision trace        │
-  └───────────────────────────┘         └────────────────────────────┘
-
-  Future (v2+, dashed):
-  · State store       — TTL decay · session risk history
-  · Additional hooks  — on_tool_result · on_outbound · on_subagent
-```
+![ACF-SDK architecture](architecture.png)
 
 ---
 
 ## Seam 1 — Hook registry
+
+![Hook registry](hook-registry.png)
 
 Hooks self-register into a registry map. The pipeline only calls whatever is registered at each execution point. Adding a new hook is purely additive — the pipeline, IPC layer, and sidecar core do not change.
 
@@ -116,6 +64,8 @@ safe   = firewall.on_memory(key, value)      # before memory write
 ---
 
 ## Seam 2 — Risk context object
+
+![Risk context object](risk_context_object.png)
 
 The risk context object is the single payload flowing through the entire PDP pipeline. In v1 the `state` field is always null — evaluation is stateless. In v2 the state store populates it before the pipeline runs. The pipeline, scanners, aggregator, and policy engine do not change between versions.
 
